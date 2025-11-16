@@ -54,6 +54,7 @@ void LBVHBuilderGPU::allocateDeviceBuffers() {
     checkCuda(cudaMalloc(&m_d_morton,   m_N * sizeof(uint32_t)), "Allocating device morton codes");
     checkCuda(cudaMalloc(&m_d_indices,  m_N * sizeof(uint32_t)), "Allocating device indices");
     checkCuda(cudaMalloc(&m_d_nodes,    m_totalNodes * sizeof(GPULBVHNode)), "Allocating device LBVH nodes");
+    checkCuda(cudaMalloc(&m_d_readyCounts, (m_N - 1) * sizeof(int)), "Allocating device ready counts");
 }
 
 void LBVHBuilderGPU::uploadPrimitives() {
@@ -71,6 +72,7 @@ void LBVHBuilderGPU::freeDeviceBuffers() {
     if (m_d_morton)   cudaFree(m_d_morton);
     if (m_d_indices)  cudaFree(m_d_indices);
     if (m_d_nodes)    cudaFree(m_d_nodes);
+    if (m_d_readyCounts) cudaFree(m_d_readyCounts);
 
     m_d_centers  = nullptr;
     m_d_bbox_min = nullptr;
@@ -78,6 +80,7 @@ void LBVHBuilderGPU::freeDeviceBuffers() {
     m_d_morton   = nullptr;
     m_d_indices  = nullptr;
     m_d_nodes    = nullptr;
+    m_d_readyCounts = nullptr;
 }
 
 
@@ -250,7 +253,7 @@ void LBVHBuilderGPU::buildTopologyOnGPU() {
 
 // Construct AABBs
 
-static inline float3 f3_min(const float3& a, const float3& b) {
+__device__ inline float3 f3_min(const float3& a, const float3& b) {
     return make_float3(
         fminf(a.x, b.x),
         fminf(a.y, b.y),
@@ -258,7 +261,7 @@ static inline float3 f3_min(const float3& a, const float3& b) {
     );
 }
 
-static inline float3 f3_max(const float3& a, const float3& b) {
+__device__ inline float3 f3_max(const float3& a, const float3& b) {
     return make_float3(
         fmaxf(a.x, b.x),
         fmaxf(a.y, b.y),
@@ -266,36 +269,60 @@ static inline float3 f3_max(const float3& a, const float3& b) {
     );
 }
 
+__global__ void buildAABBsFromLeavesKernel(GPULBVHNode* nodes, const float3* bbox_min, const float3* bbox_max, int N, int* readyCounts) {
+    int leafIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (leafIdx >= N) return;
+
+    int nodeIdx = (N - 1) + leafIdx;
+    GPULBVHNode& leaf = nodes[nodeIdx];
+
+    int prim = leaf.prim_index;
+
+    leaf.bbox_min = bbox_min[prim];
+    leaf.bbox_max = bbox_max[prim];
+
+    __threadfence();
+
+    // Propagate readiness up the tree
+    int parentIdx = leaf.parent;
+    while (parentIdx >= 0) {
+        int old = atomicAdd(&readyCounts[parentIdx], 1);
+
+        if (old == 0) {
+            // First child to report
+            break;
+        } else if (old == 1) {
+            // Both children ready, compute parent's AABB
+            GPULBVHNode& parent = nodes[parentIdx];
+            GPULBVHNode& leftChild  = nodes[parent.left];
+            GPULBVHNode& rightChild = nodes[parent.right];
+
+            parent.bbox_min = f3_min(leftChild.bbox_min, rightChild.bbox_min);
+            parent.bbox_max = f3_max(leftChild.bbox_max, rightChild.bbox_max);
+
+            __threadfence();
+
+            nodeIdx = parentIdx;
+            parentIdx = nodes[nodeIdx].parent;
+        } else {
+            // Should not happen
+            break;
+        }
+    }
+
+}
+
 void LBVHBuilderGPU::buildAABBsOnGPU() {
     if (m_N <= 0) return;
 
-    std::vector<GPULBVHNode> h_nodes(m_totalNodes);
-    checkCuda(cudaMemcpy(h_nodes.data(), m_d_nodes, m_totalNodes * sizeof(GPULBVHNode), cudaMemcpyDeviceToHost), "Downloading nodes for AABB construction");
+    checkCuda(cudaMemset(m_d_readyCounts, 0, (m_N - 1) * sizeof(int)), "Clearing ready counts");
 
-    for (int leafIdx = 0; leafIdx < m_N; leafIdx++) {
-        int nodeIdx = (m_N - 1) + leafIdx;
-        GPULBVHNode& node = h_nodes[nodeIdx];
-
-        int prim = node.prim_index;
-
-        const float3 bbox_min = m_h_bbox_min[prim];
-        const float3 bbox_max = m_h_bbox_max[prim];
-
-        node.bbox_min = bbox_min;
-        node.bbox_max = bbox_max;
+    {
+        int block = 128;
+        int grid = (m_N + block - 1) / block;
+        buildAABBsFromLeavesKernel<<<grid, block>>>(m_d_nodes, m_d_bbox_min, m_d_bbox_max, m_N, m_d_readyCounts);
+        checkCuda(cudaGetLastError(), "Launching buildAABBsFromLeavesKernel");
     }
-
-    for (int i = m_N - 2; i >= 0; i--) {
-        GPULBVHNode& node = h_nodes[i];
-
-        const GPULBVHNode& leftChild  = h_nodes[node.left];
-        const GPULBVHNode& rightChild = h_nodes[node.right];
-
-        node.bbox_min = f3_min(leftChild.bbox_min, rightChild.bbox_min);
-        node.bbox_max = f3_max(leftChild.bbox_max, rightChild.bbox_max);
-    }
-
-    checkCuda(cudaMemcpy(m_d_nodes, h_nodes.data(), m_totalNodes * sizeof(GPULBVHNode), cudaMemcpyHostToDevice), "Uploading nodes after AABB construction");
 }
 
 } // namespace gpu_bvh

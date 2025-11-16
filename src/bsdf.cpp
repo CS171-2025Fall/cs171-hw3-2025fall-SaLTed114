@@ -121,6 +121,8 @@ Vec3f PerfectRefraction::sample(
     interaction.wi = refracted;
   }
 
+  interaction.wi = Normalize(interaction.wi);
+
   // Set the pdf and return value, we dont need to understand the value now
   if (pdf != nullptr) *pdf = 1.0F;
   return Vec3f(1.0);

@@ -34,12 +34,13 @@ private:
     const float3* m_h_bbox_min;
     const float3* m_h_bbox_max;
 
-    float3*   m_d_centers   = nullptr;
-    float3*   m_d_bbox_min  = nullptr;
-    float3*   m_d_bbox_max  = nullptr;
-    uint32_t* m_d_morton    = nullptr;
-    uint32_t* m_d_indices   = nullptr;
+    float3*   m_d_centers  = nullptr;
+    float3*   m_d_bbox_min = nullptr;
+    float3*   m_d_bbox_max = nullptr;
+    uint32_t* m_d_morton   = nullptr;
+    uint32_t* m_d_indices  = nullptr;
     GPULBVHNode* m_d_nodes = nullptr;
+    int* m_d_readyCounts   = nullptr;
 
     int m_N = 0;
     int m_totalNodes = 0;

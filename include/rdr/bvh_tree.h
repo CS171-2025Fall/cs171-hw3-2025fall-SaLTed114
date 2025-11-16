@@ -180,6 +180,9 @@ void BVHTree<_>::buildGPU() {
       cn.span_left   = INVALID_INDEX;
       cn.span_right  = INVALID_INDEX;
     }
+
+    cn.aabb.low_bnd   = Vec3f(gn.bbox_min.x, gn.bbox_min.y, gn.bbox_min.z);
+    cn.aabb.upper_bnd = Vec3f(gn.bbox_max.x, gn.bbox_max.y, gn.bbox_max.z);
   }
 
   int root = 0;
@@ -192,26 +195,6 @@ void BVHTree<_>::buildGPU() {
 
   root_index = root;
 
-  std::function<AABB(int)> buildAABB = [&](int idx) -> AABB {
-    auto &n = cpu_nodes[idx];
-    if (n.is_leaf) {
-      int primIdx = n.span_left;
-      n.aabb = tris[primIdx].getAABB();
-      return n.aabb;
-    }
-
-    AABB box;
-    if (n.left_index != INVALID_INDEX) {
-      box.unionWith(buildAABB(n.left_index));
-    }
-    if (n.right_index != INVALID_INDEX) {
-      box.unionWith(buildAABB(n.right_index));
-    }
-    n.aabb = box;
-    return n.aabb;
-  };
-
-  buildAABB(root);
   internal_nodes.clear();
   internal_nodes = std::move(cpu_nodes);
   
