@@ -63,6 +63,14 @@ void IntersectionTestIntegrator::render(ref<Camera> camera, ref<Scene> scene) {
         // assert(pixel_sample.y >= dy && pixel_sample.y <= dy + 1);
         // const Vec3f &L = Li(scene, ray, sampler);
         // camera->getFilm()->commitSample(pixel_sample, L);
+
+        const Vec2f &pixel_sample = sampler.getPixelSample();
+        auto ray = camera->generateDifferentialRay(pixel_sample.x, pixel_sample.y);
+
+        assert(pixel_sample.x >= dx && pixel_sample.x <= dx + 1);
+        assert(pixel_sample.y >= dy && pixel_sample.y <= dy + 1);
+        const Vec3f &L = Li(scene, ray, sampler);
+        camera->getFilm()->commitSample(pixel_sample, L);
       }
     }
   }
@@ -104,7 +112,12 @@ Vec3f IntersectionTestIntegrator::Li(
       // @see SurfaceInteraction::spawnRay
       //
       // You should update ray = ... with the spawned ray
-      UNIMPLEMENTED;
+      // UNIMPLEMENTED;
+
+      Float pdf;
+      interaction.bsdf->sample(interaction, sampler, &pdf);
+
+      ray = interaction.spawnRay(interaction.wi);
       continue;
     }
 
@@ -148,7 +161,17 @@ Vec3f IntersectionTestIntegrator::directLighting(
   //
   //    You can use iteraction.p to get the intersection position.
   //
-  UNIMPLEMENTED;
+  // UNIMPLEMENTED;
+
+  SurfaceInteraction shadow_interaction;
+  bool occluded = scene->intersect(test_ray, shadow_interaction);
+
+  if (occluded) {
+    Float dist_to_intersection = Norm(shadow_interaction.p - interaction.p);
+    if (dist_to_intersection < dist_to_light) {
+      return color;  // Occluded
+    }
+  }
 
   // Not occluded, compute the contribution using perfect diffuse diffuse model
   // Perform a quick and dirty check to determine whether the BSDF is ideal
@@ -170,7 +193,15 @@ Vec3f IntersectionTestIntegrator::directLighting(
 
     // You should assign the value to color
     // color = ...
-    UNIMPLEMENTED;
+    // UNIMPLEMENTED;
+
+    if (bsdf != nullptr && is_ideal_diffuse) {
+      Vec3f brdf = bsdf->evaluate(interaction);
+      
+      // color = albedo * cos_theta * light_intensity / distance^2
+      const Float light_intensity = 4.0f;
+      color = brdf * cos_theta * light_intensity / (dist_to_light * dist_to_light);
+    }
   }
 
   return color;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(CS171-assignment4 LANGUAGES C CXX)
+project(CS171-assignment4 LANGUAGES C CXX CUDA)
 # cmake_policy(SET CMP0135 NEW)
 
 find_program(CCACHE_FOUND ccache)

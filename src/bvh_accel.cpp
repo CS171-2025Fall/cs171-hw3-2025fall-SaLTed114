@@ -14,6 +14,8 @@
 #include "rdr/ray.h"
 #include "rdr/shape.h"
 
+#include "rdr/bvh_debug.h"
+
 RDR_NAMESPACE_BEGIN
 
 void BVHAccel::setTriangleMesh(const ref<TriangleMeshResource> &mesh) {
@@ -25,7 +27,14 @@ void BVHAccel::setTriangleMesh(const ref<TriangleMeshResource> &mesh) {
 }
 
 void BVHAccel::build() {
+#define USE_GPU_BVH
+#ifdef USE_GPU_BVH
+  triangle_tree.buildGPU();
+  dumpBVHTree(triangle_tree, "tmp/gpu_bvh.txt");
+#else
   triangle_tree.build();
+  dumpBVHTree(triangle_tree, "tmp/cpu_bvh.txt");
+#endif
 }
 
 AABB BVHAccel::getBound() const {

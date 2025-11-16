@@ -10,6 +10,8 @@
 #include "rdr/primitive.h"
 #include "rdr/ray.h"
 
+#include "gpu_bvh/gpu_lbvh_builder.cuh"
+
 RDR_NAMESPACE_BEGIN
 
 template <typename DataType_>
@@ -73,6 +75,9 @@ public:
   /// reset build status
   void clear();
 
+  /// @brief Build the BVH on GPU
+  void buildGPU();
+
   /// *Can* be executed not only once
   void build();
 
@@ -81,6 +86,15 @@ public:
     if (!is_built) return false;
     return intersect(ray, root_index, callback);
   }
+
+  const std::vector<NodeType> &getNodes() const { return nodes; }
+  std::vector<NodeType> &getNodes() { return nodes; }
+
+  const std::vector<InternalNode> &getInternalNodes() const { return internal_nodes; }
+  std::vector<InternalNode> &getInternalNodes() { return internal_nodes; }
+
+  const IndexType &getRootIndex() const { return root_index; }
+  IndexType &getRootIndex() { return root_index; }
 
 private:
   EHeuristicProfile hprofile{EHeuristicProfile::EMedianHeuristic};
@@ -115,6 +129,96 @@ void BVHTree<_>::clear() {
 }
 
 template <typename _>
+void BVHTree<_>::buildGPU() {
+  auto &tris = nodes;
+  const size_t N = tris.size();
+  if (N == 0) return;
+
+  std::vector<float3> centers(N);
+  std::vector<float3> bbox_min(N);
+  std::vector<float3> bbox_max(N);
+
+  for (size_t i = 0; i < N; i++) {
+    const auto& tri = tris[i];
+    AABB box = tri.getAABB();
+
+    auto c = box.getCenter();
+    centers[i] = make_float3(c.x, c.y, c.z);
+
+    bbox_min[i] = make_float3(box.low_bnd.x,   box.low_bnd.y,   box.low_bnd.z);
+    bbox_max[i] = make_float3(box.upper_bnd.x, box.upper_bnd.y, box.upper_bnd.z);
+  }
+
+  gpu_bvh::LBVHBuilderGPU builder(
+    centers.data(),
+    bbox_min.data(),
+    bbox_max.data(),
+    static_cast<int>(N)
+  );
+  builder.build();
+
+  std::vector<gpu_bvh::GPULBVHNode> gpu_nodes;
+  builder.downloadNodes(gpu_nodes);
+
+  const size_t totalNodes = static_cast<int>(gpu_nodes.size());
+  std::vector<InternalNode> cpu_nodes(totalNodes);
+
+  for (size_t i = 0; i < totalNodes; i++) {
+    const auto &gn = gpu_nodes[i];
+    auto &cn = cpu_nodes[i];
+
+    if (gn.is_leaf) {
+      cn.is_leaf = true;
+      cn.left_index  = INVALID_INDEX;
+      cn.right_index = INVALID_INDEX;
+      cn.span_left   = gn.prim_index;
+      cn.span_right  = gn.prim_index + 1;
+    } else {
+      cn.is_leaf = false;
+      cn.left_index  = gn.left;
+      cn.right_index = gn.right;
+      cn.span_left   = INVALID_INDEX;
+      cn.span_right  = INVALID_INDEX;
+    }
+  }
+
+  int root = 0;
+  for (int i = 0; i < totalNodes; i++) {
+    if (!gpu_nodes[i].is_leaf && gpu_nodes[i].parent == -1) {
+      root = i;
+      break;
+    }
+  }
+
+  root_index = root;
+
+  std::function<AABB(int)> buildAABB = [&](int idx) -> AABB {
+    auto &n = cpu_nodes[idx];
+    if (n.is_leaf) {
+      int primIdx = n.span_left;
+      n.aabb = tris[primIdx].getAABB();
+      return n.aabb;
+    }
+
+    AABB box;
+    if (n.left_index != INVALID_INDEX) {
+      box.unionWith(buildAABB(n.left_index));
+    }
+    if (n.right_index != INVALID_INDEX) {
+      box.unionWith(buildAABB(n.right_index));
+    }
+    n.aabb = box;
+    return n.aabb;
+  };
+
+  buildAABB(root);
+  internal_nodes.clear();
+  internal_nodes = std::move(cpu_nodes);
+  
+  is_built = true;
+}
+
+template <typename _>
 void BVHTree<_>::build() {
   if (is_built) return;
   // pre-allocate memory
@@ -143,7 +247,8 @@ typename BVHTree<_>::IndexType BVHTree<_>::build(
   // @see span_left: The left index of the current span
   // @see span_right: The right index of the current span
   //
-  /* if ( */ UNIMPLEMENTED; /* ) */
+  // /* if ( */ UNIMPLEMENTED; /* ) */
+  if (depth >= CUTOFF_DEPTH || (span_right - span_left) <= 4)
   {
     // create leaf node
     const auto &node = nodes[span_left];
@@ -181,7 +286,16 @@ use_median_heuristic:
     //
     // You may find `std::nth_element` useful here.
 
-    UNIMPLEMENTED;
+    // UNIMPLEMENTED;
+
+    std::nth_element(
+      nodes.begin() + span_left,
+      nodes.begin() + split,
+      nodes.begin() + span_right,
+      [dim](const NodeType &a, const NodeType &b) {
+        return a.getAABB().getCenter()[dim] <
+               b.getAABB().getCenter()[dim];
+      });
 
     // clang-format on
   } else if (hprofile == EHeuristicProfile::ESurfaceAreaHeuristic) {
