@@ -141,6 +141,103 @@ Vec3f IntersectionTestIntegrator::Li(
 
 Vec3f IntersectionTestIntegrator::directLighting(
     ref<Scene> scene, SurfaceInteraction &interaction) const {
+#define USE_ADVANCED_LIGHTS
+#define ENABLE_AREA_LIGHT
+
+#ifdef USE_ADVANCED_LIGHTS
+  Vec3f color(0, 0, 0);
+
+  const BSDF* bsdf = interaction.bsdf;
+  bool is_diffuse = dynamic_cast<const IdealDiffusion *>(bsdf) != nullptr;
+  if (!bsdf || !is_diffuse) return color;
+
+  static const std::vector<Vec3f> light_positions = {
+    Vec3f(0.0f, 1.5f, 0.5f),   // main light
+    Vec3f(-0.8f, 1.4f, -0.5f), // left warm fill light
+    Vec3f(0.9f, 1.6f, 0.3f)    // right cool fill light
+  };
+
+  static const std::vector<Vec3f> light_intensities = {
+    Vec3f(17.0f, 12.0f, 5.0f), // main light
+    Vec3f(4.0f, 3.0f, 2.0f),   // left warm fill light
+    Vec3f(3.0f, 4.5f, 6.0f)    // right cool fill light
+    // Vec3f(0.0f, 0.0f, 0.0f),
+    // Vec3f(0.0f, 0.0f, 0.0f),
+    // Vec3f(0.0f, 0.0f, 0.0f)
+  };
+
+  for (size_t i = 0; i < light_positions.size(); ++i) {
+    Vec3f light_pos = light_positions[i];
+    Vec3f light_intensity = light_intensities[i];
+
+    Float dist_to_light = Norm(light_pos - interaction.p);
+    Vec3f wi = Normalize(light_pos - interaction.p);
+
+    DifferentialRay shadow_ray(interaction.p, wi);
+    SurfaceInteraction occ;
+    bool blocked = scene->intersect(shadow_ray, occ);
+
+    if (blocked) {
+      Float hit_dist = Norm(occ.p - interaction.p);
+      if (hit_dist <  dist_to_light) {
+        // occluded
+        continue; 
+      }
+    }
+
+    Float cos_theta = std::max(Dot(wi, interaction.normal), 0.0f);
+    if (cos_theta <= 0.0f) continue;
+
+    Vec3f brdf = bsdf->evaluate(interaction);
+
+    color += brdf * cos_theta * light_intensity / (dist_to_light * dist_to_light);
+  }
+
+  color *= 0.25f;
+#ifdef ENABLE_AREA_LIGHT
+  Vec3f rect_center(0.0f, 1.4f, 0.0f);
+  float width  = 1.2f;
+  float height = 1.2f;
+
+  Vec3f ex(width, 0.0f, 0.0f);
+  Vec3f ey(0.0f, 0.0f, height);
+  
+  Vec3f area_light_radiance(10.0f, 10.0f, 10.0f);
+
+  Vec3f area_accum(0.0f, 0.0f, 0.0f);
+
+  for (int s = 0; s < 16/*AREA_LIGHT_SAMPLES*/; s++) {
+    float u = float(rand()) / RAND_MAX;
+    float v = float(rand()) / RAND_MAX;
+
+    Vec3f light_pos = rect_center + (u - 0.5f) * ex + (v - 0.5f) * ey;
+
+    Float dist_to_light = Norm(light_pos - interaction.p);
+    Vec3f wi = Normalize(light_pos - interaction.p);
+
+    DifferentialRay shadow_ray(interaction.p, wi);
+    SurfaceInteraction occ;
+    bool blocked = scene->intersect(shadow_ray, occ);
+
+    if (blocked && Norm(occ.p - interaction.p) < dist_to_light) {
+      continue;
+    }
+
+    float cos_theta = std::max(Dot(wi, interaction.normal), 0.0f);
+    if (cos_theta <= 0.0f) continue;
+
+    Vec3f brdf = bsdf->evaluate(interaction);
+
+    area_accum += brdf * cos_theta * area_light_radiance / (dist_to_light * dist_to_light);
+  }
+
+  area_accum /= 16.0f/*AREA_LIGHT_SAMPLES*/;
+  color += area_accum;
+
+#endif
+
+  return color * 0.3f;
+#else
   Vec3f color(0, 0, 0);
   Float dist_to_light = Norm(point_light_position - interaction.p);
   Vec3f light_dir     = Normalize(point_light_position - interaction.p);
@@ -199,12 +296,12 @@ Vec3f IntersectionTestIntegrator::directLighting(
       Vec3f brdf = bsdf->evaluate(interaction);
       
       // color = albedo * cos_theta * light_intensity / distance^2
-      const Float light_intensity = 4.0f;
-      color = brdf * cos_theta * light_intensity / (dist_to_light * dist_to_light);
+      color = 0.3f * brdf * cos_theta * point_light_flux / (dist_to_light * dist_to_light);
     }
   }
 
   return color;
+#endif
 }
 
 /* ===================================================================== *

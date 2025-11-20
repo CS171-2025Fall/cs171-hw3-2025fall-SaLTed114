@@ -322,6 +322,7 @@ void LBVHBuilderGPU::buildAABBsOnGPU() {
         int grid = (m_N + block - 1) / block;
         buildAABBsFromLeavesKernel<<<grid, block>>>(m_d_nodes, m_d_bbox_min, m_d_bbox_max, m_N, m_d_readyCounts);
         checkCuda(cudaGetLastError(), "Launching buildAABBsFromLeavesKernel");
+        checkCuda(cudaDeviceSynchronize(), "Synchronizing after buildAABBsFromLeavesKernel");
     }
 }
 

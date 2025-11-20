@@ -58,7 +58,7 @@ fi
 # -----------------------------------------
 # Copy to data/ for display
 # -----------------------------------------
-cp "$output_local" "$output_data"
+# cp "$output_local" "$output_data"
 
 # -----------------------------------------
 # Optional display
