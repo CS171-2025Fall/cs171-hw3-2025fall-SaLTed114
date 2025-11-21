@@ -51,7 +51,7 @@ compile_commands.json
 # mitsuba
 *.exr
 *.svg
-*.png
+# *.png
 *.mip
 *.log
 *.data
