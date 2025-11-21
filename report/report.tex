@@ -23,20 +23,249 @@
 \lstset{basicstyle=\ttfamily}
 
 % Title portion
-\title{Assignment 1:\\ {Exploring OpenGL Programming}} 
+\title{Assignment 3:\\ {Basic Ray Tracing}} 
 
-\author{Name: \quad \\ student number:\
-\\email: \quad \texttt{}}
+\author{Name: \quad Zhou Yukai\\ student number:\ 2023533109
+\\email: \quad \texttt{zhouyk2023@shanghaitech.edu.cn}}
 
 % Document starts
 \begin{document}
 \maketitle
 
 \vspace*{2 ex}
+\section{Introduction}
 
 \section{Introduction}
-\section{Implementation Details}
+
+This assignment implements a basic ray tracer following the structure provided in the framework. 
+The required components include ray--triangle and ray--AABB intersections, a BVH accelerator, 
+a direct lighting integrator with shadow testing, anti--aliasing, and a perfect refraction material. 
+All modules are integrated into a working system that renders Cornell box--type scenes with both diffuse and transparent objects.
+
+In addition, we implemented a GPU LBVH builder (Karras 2012) as an optional component to accelerate BVH construction for scenes containing a large number of primitives.
+
+
+\section{Ray--Geometry Intersections}
+
+\subsection{Ray--Triangle Intersection}
+
+The ray--triangle intersection follows the standard barycentric method.  
+Given a ray $r(t)=o+t d$ and triangle vertices $p_0,p_1,p_2$, we solve:
+\[
+o + t d = p_0 + u(p_1-p_0) + v(p_2-p_0),
+\]
+where $u, v$ are barycentric coordinates.
+
+The implementation computes the triangle edges, evaluates several cross products, 
+and checks that $u \ge 0$, $v \ge 0$, and $u+v \le 1$.  
+If valid, the intersection distance $t$ is accepted and the interpolated position, normal, 
+and UV coordinates are written to the \texttt{SurfaceInteraction}.
+
+\subsection{Ray--AABB Intersection}
+
+Ray--AABB testing uses the standard ``slab'' method.  
+For each axis we compute the entering and exiting $t$ values for the bounding box, 
+and accumulate a global range $[t_{\min}, t_{\max}]$.  
+The ray hits the AABB if $t_{\min} \le t_{\max}$.
+
+This logic is used heavily during BVH traversal, so the implementation 
+precomputes reciprocal ray directions and sign bits to reduce branches.
+
+
+\section{BVH Construction}
+
+\subsection{Overall Structure}
+
+The BVH is stored as a flat array of nodes.  
+Each node contains:
+- a bounding box,  
+- indices for its children or a primitive range,  
+- a flag indicating whether it is a leaf.
+
+\subsection{Build Algorithm}
+
+The CPU BVH uses a simple top--down recursive partition:
+
+1. Compute the bounding box of primitives and the bounding box of their centroids.  
+2. If the number of primitives falls below a threshold, create a leaf.  
+3. Otherwise choose the split axis as the longest centroid extent.  
+4. Partition primitives into two groups along the split axis.  
+5. Recursively build both children.
+
+This strategy is simpler than SAH but sufficiently effective for the assignment.
+
+\subsection{Traversal}
+
+BVH traversal uses an explicit stack.  
+For each node:
+- test the ray against the node’s AABB;  
+- if overlapping, traverse children (internal) or intersect all primitives (leaf);  
+- the traversal order uses the entry distance to reduce early misses.
+
+This greatly reduces the number of triangle tests compared to brute force.
+
+
+\section{Direct Lighting and Anti--Aliasing}
+
+\subsection{Sampling and Anti--Aliasing}
+
+Each pixel is sampled multiple times by jittering subpixel sample points.  
+These coordinates are transformed by the camera model to generate primary rays.  
+The final pixel value is the average of all ray contributions.
+
+\subsection{Direct Lighting}
+
+For each ray intersection:
+1. Construct a \texttt{SurfaceInteraction}.  
+2. Query the BSDF for the surface response.  
+3. Sample the light direction and check visibility via a shadow ray.  
+4. If visible, compute:
+\[
+L = f(\omega_o,\omega_l)\,L_i \,\max(0,n \cdot \omega_l).
+\]
+
+Diffuse surfaces use a Lambertian model whose albedo may come from a texture.
+
+\section{Optional Extensions}
+
+This section describes the optional components implemented in addition to the required features, including support for multiple point lights and a soft–shadow rectangular area light.
+
+\subsection{Multiple Point Lights}
+
+The original integrator supports only a single point light specified by its position and flux.
+We extend the system to handle an arbitrary number of point lights by maintaining a small array of light positions and intensities inside the integrator:
+
+\begin{itemize}
+\item Each light contributes independently using standard diffuse shading.
+\item A shadow ray is shot toward each light to determine visibility.
+\item Lighting contributions accumulate additively.
+\end{itemize}
+
+This extension allows scenes to contain fill lights or colored secondary lights.
+Figure~\ref{fig:multi_light} shows an example rendering using three point lights.
+
+% \begin{figure}[h]
+% \centering
+% \includegraphics[width=0.45\linewidth]{figures/multi_light_placeholder.png}
+% \caption{Scene illuminated by multiple point lights.}
+% \label{fig:multi_light}
+% \end{figure}
+
+\subsection{Rectangular Area Light and Soft Shadows}
+
+To approximate real–world lighting effects, we further implemented a rectangular area light that produces soft shadows.
+Unlike point lights which create sharp shadow edges, area lights illuminate the scene from a finite region, so the visibility varies smoothly across surfaces.
+
+Our implementation models the area light directly inside the integrator without modifying the framework’s light interface.
+A rectangular emitter is parameterized by:
+
+\begin{itemize}
+\item a center position $c$,
+\item two spanning directions $e_x, e_y$ defining width and height,
+\item a constant radiance value.
+\end{itemize}
+
+For each surface interaction, the integrator performs Monte Carlo sampling:
+
+\begin{enumerate}
+\item A random point is sampled on the rectangle:
+
+$$ p_L = c + (u - \frac{1}{2})e_x + (v - \frac{1}{2})e_y, \quad u,v \sim U[0,1]. $$
+
+\item A shadow ray is cast toward $p_L$ to test occlusion.
+\item If unoccluded, a diffuse contribution proportional to $\max(0, n\cdot\omega_i)$ is added.
+\item The result is averaged over all samples.
+\end{enumerate}
+
+This produces soft penumbra regions whose width increases with distance from the occluder, matching the expected behavior of an area light.
+
+Figure~\ref{fig:area_light} demonstrates the resulting soft shadows inside the Cornell box.
+The edges of the box shadows become smooth gradients instead of hard discontinuities.
+
+\subsection{Implementation Notes}
+
+\begin{itemize}
+\item The area light is sampled purely inside the direct lighting integrator and does not require modifications to the framework’s \texttt{Light} or \texttt{Scene} classes.
+\item Increasing the number of samples improves the smoothness of shadows but increases render time.
+\item Compared to point lights, area lighting produces more natural shading on curved refractive objects, such as the glass sphere used in our scene.
+\end{itemize}
+
+\section{Perfect Refraction Material}
+
+The perfect refraction BSDF uses Snell’s law.  
+We determine whether the ray is entering or exiting the medium, compute the appropriate $\eta$ ratio, 
+and attempt refraction.  
+If total internal reflection occurs, reflection is used instead.
+
+The integrator recursively traces rays through transparent materials until a solid surface or the environment is reached.  
+A maximum recursion depth is enforced for safety.
+
+
+\section{GPU LBVH Construction (Optional)}
+
+\subsection{Motivation}
+
+When scenes contain many primitives, CPU BVH build becomes slow.  
+LBVH constructs the BVH in parallel by first sorting primitives according to Morton codes and then building the topology using local prefix comparisons.
+
+\subsection{Pipeline Summary}
+
+The GPU LBVH follows these steps:
+1. Compute centroids and Morton codes.  
+2. Sort primitives by Morton codes.  
+3. Determine internal node ranges using prefix lengths.  
+4. Assign child links.  
+5. Perform a bottom--up bounding box reduction.
+
+\subsection{Validation}
+
+We verified correctness using small test scenes and comparing node structures with the CPU BVH.  
+Renderings using CPU and GPU BVHs match closely.  
+Large scenes observe significant performance improvement.
+
+
 \section{Results}
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=0.45\linewidth]{figures/sigle_light_cpu.png}
+	\caption{Render result(single light).}
+\end{figure}
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=0.45\linewidth]{figures/sigle_light_gpu.png}
+	\caption{Building LBVH on GPU.}
+\end{figure}
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=0.45\linewidth]{figures/multi_light_gpu.png}
+	\caption{Multiple light result.}
+\end{figure}
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=0.45\linewidth]{figures/area_light_gpu.png}
+	\caption{Area light result.}
+	\label{fig:area_light}
+\end{figure}
+
+\begin{figure}
+	\centering
+	\includegraphics[width=0.45\linewidth]{figures/final.png}
+	\caption{Final result.}
+\end{figure}
+
+\section{Conclusion}
+
+We implemented a complete ray tracer capable of rendering diffuse and refractive objects with direct illumination.  
+The BVH greatly accelerates intersection tests, and anti--aliasing improves image quality.  
+The optional GPU LBVH builder further reduces BVH build time for complex scenes.
+
+Future improvements may include microfacet BRDFs, environment lighting, multiple importance sampling, and full path tracing.
+
+
 
 \end{document}
 
